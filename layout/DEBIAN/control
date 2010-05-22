@@ -1,0 +1,9 @@
+Package: com.zimm.libdisplaystack
+Name: libdisplaystack
+Depends: mobilesubstrate, firmware (>= 3.0)
+Version: 1.1.1
+Architecture: iphoneos-arm
+Description: Common library for app switchers
+Maintainer: Dan Zimmerman <daniel.zimmerman@me.com>
+Author: Dan Zimmerman <daniel.zimmerman@me.com>
+Section: Development
