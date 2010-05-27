@@ -167,7 +167,7 @@ __attribute__((constructor)) static void LibDisplayStackInitializer()
 
 - (NSArray *)activeApps
 {
-	return [[activeApps copy] autorelease];
+	return [activeApps copy];
 }
 
 - (NSSet *)backgroundedApplications
@@ -177,7 +177,7 @@ __attribute__((constructor)) static void LibDisplayStackInitializer()
 
 - (NSArray *)backgroundedApps
 {
-	return [[backgroundedApps copy] autorelease];
+	return [backgroundedApps copy];
 }
 
 + (void)initialize
