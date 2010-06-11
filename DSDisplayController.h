@@ -30,4 +30,7 @@
 - (void)deactivateTopApplicationAnimated:(BOOL)animated force:(BOOL)force;
 - (void)enableBackgroundingForDisplayIdentifier:(NSString *)identifier;
 - (void)disableBackgroundingForDisplayIdentifier:(NSString *)identifier;
+- (void)setNewActiveApps:(NSArray *)newApps;
+- (BOOL)canReorder;
+- (void)lockedAlertWithIdentifier:(NSString *)identifier andAnimations:(BOOL)animations;
 @end

@@ -12,9 +12,16 @@
 #import <SpringBoard/SBUIController.h>
 #import <SpringBoard/SBDisplayStack.h>
 #import <SpringBoard/SBDisplay.h>
+#import <SpringBoard/SBAlert.h>
+#import <SpringBoard/SBApplication.h>
+#import <SpringBoard/SBIconList.h>
+
+#import "UIModalView.h"
+#import "UIModalViewDelegate.h"
 
 @interface SpringBoard (Backgrounder)
 - (void)setBackgroundingEnabled:(BOOL)enable forDisplayIdentifier:(NSString *)identifier;
+- (void)releaseDSDelegate:(id)_delegate;
 @end
 
 @interface SBUIController (CategoriesSB)
@@ -23,6 +30,30 @@
 
 @interface UIDevice (iPad)
 - (BOOL)isWildcat;
+@end
+
+@interface DSModalDelegate : NSObject<UIModalViewDelegate> {
+}
+-(void)modalView:(id)view didDismissWithButtonIndex:(int)buttonIndex;
+@end
+
+@implementation DSModalDelegate
+
+-(void)modalView:(id)view didDismissWithButtonIndex:(int)buttonIndex
+{
+	UIModalView *view1 = (UIModalView *)view;
+	if ([view1.title isEqualToString:@"Welcome to DisplayController 2.0"]) {
+		switch (buttonIndex) {
+			case 0:
+				[[DSDisplayController sharedInstance] activateAppWithDisplayIdentifier:@"com.apple.Preferences" animated:YES];
+				break;
+			default:
+				break;
+		}
+	}
+	[(SpringBoard *)[UIApplication sharedApplication] releaseDSDelegate:self];
+}
+
 @end
 
 %class SBApplicationController;
@@ -35,7 +66,24 @@ static NSMutableArray *displayStacks;
 static NSMutableArray *activeApps;
 static NSMutableArray *backgroundedApps;
 static DSDisplayController *sharedInstance;
+static BOOL canReorder = NO;
+static BOOL lockApps = NO;
+static NSString *currentID = nil;
+static BOOL currentAnimation = NO;
+static BOOL overrideLaunch = NO;
+static BOOL _overRideAnimations = NO;
+static BOOL _animations = YES;
+static BOOL _passwordDirectly = YES;
 
+static void UpdatePreferences() {
+	NSDictionary *prefs = [[NSDictionary alloc] initWithContentsOfFile:@"/var/mobile/Library/Preferences/com.zimm.libdisplaystack.plist"] ?: [[NSDictionary alloc] init];
+	canReorder = [prefs objectForKey:@"reorder"] ? [[prefs objectForKey:@"reorder"] boolValue] : NO;
+	lockApps = [prefs objectForKey:@"locked"] ? [[prefs objectForKey:@"locked"] boolValue] : NO;
+	_overRideAnimations = [prefs objectForKey:@"overrideanimations"] ? [[prefs objectForKey:@"overrideanimations"] boolValue] : NO;
+	_animations = [prefs objectForKey:@"animations"] ? [[prefs objectForKey:@"animations"] boolValue] : YES;
+	_passwordDirectly = [prefs objectForKey:@"passworddirectly"] ? [[prefs objectForKey:@"passworddirectly"] boolValue] : YES;
+	[prefs release];
+}
 
 #define SBWPreActivateDisplayStack        [displayStacks objectAtIndex:0]
 #define SBWActiveDisplayStack             [displayStacks objectAtIndex:1]
@@ -54,10 +102,51 @@ static DSDisplayController *sharedInstance;
 	return self;
 }
 
+-(void)pushDisplay:(SBDisplay *)display
+{
+	if (!([self isEqual:SBWActiveDisplayStack] || [self isEqual:SBWPreActivateDisplayStack])) {
+		%orig;
+		return;
+	}
+	if (lockApps) {
+		NSDictionary *prefs = [[NSDictionary alloc] initWithContentsOfFile:@"/var/mobile/Library/Preferences/com.zimm.libdisplaystack.plist"] ?: [[NSDictionary alloc] init];
+		if ([(NSArray *)[prefs objectForKey:@"lockedapps"] containsObject:[display displayIdentifier]] && !overrideLaunch) {
+			[[DSDisplayController sharedInstance] lockedAlertWithIdentifier:[display displayIdentifier] andAnimations:[[display displaySettingsDescription] isEqualToString:@"animate"]];
+			[prefs release];
+			return;
+		}
+		[prefs release];
+	}
+	if ([self isEqual:SBWActiveDisplayStack])
+		overrideLaunch = NO;
+	%orig;
+}
+
 - (void)dealloc
 {
     [displayStacks removeObject:self];
     %orig;
+}
+
+%end
+
+%hook SBDisplay
+
+-(void)setDisplaySetting:(unsigned)setting flag:(BOOL)flag
+{
+	if (_overRideAnimations && !_animations && setting == 4) {
+		%orig;
+		[self setActivationSetting:0x1000 value:[NSNumber numberWithInteger:1]];
+	} else
+		%orig;
+}
+
+-(void)setDeactivationSetting:(unsigned)setting flag:(BOOL)flag
+{
+	if (_overRideAnimations && !_animations && setting == 2) {
+		%orig(0x8, NO);
+	} else
+		%orig;
 }
 
 %end
@@ -69,6 +158,7 @@ static DSDisplayController *sharedInstance;
 	displayStacks = (NSMutableArray *)CFArrayCreateMutable(kCFAllocatorDefault, 0, NULL);
 	activeApps = [[NSMutableArray alloc] init];
 	backgroundedApps = [[NSMutableArray alloc] init];
+	CFNotificationCenterAddObserver(CFNotificationCenterGetDarwinNotifyCenter(), NULL, (void (*)(CFNotificationCenterRef, void *, CFStringRef, const void *, CFDictionaryRef))UpdatePreferences, CFSTR("com.zimm.libdisplaystack.settingschanged"), NULL, CFNotificationSuspensionBehaviorHold);
     %orig;
 }
 
@@ -82,6 +172,12 @@ static DSDisplayController *sharedInstance;
 			[backgroundedApps removeObject:identifier];
 	}
 	%orig;
+}
+
+%new(v@:@)
+- (void)releaseDSDelegate:(id)_delegate
+{
+	[_delegate release];
 }
 
 %end
@@ -124,6 +220,60 @@ static DSDisplayController *sharedInstance;
 
 %end
 
+%hook SBUIController
+
+- (void)finishLaunching
+{
+	%orig;
+	NSMutableDictionary *prefs = [[NSMutableDictionary alloc] initWithContentsOfFile:@"/var/mobile/Library/Preferences/com.zimm.libdisplaystack.plist"] ?: [[NSMutableDictionary alloc] init];
+	canReorder = [prefs objectForKey:@"reorder"] ? [[prefs objectForKey:@"reorder"] boolValue] : NO;
+	lockApps = [prefs objectForKey:@"locked"] ? [[prefs objectForKey:@"locked"] boolValue] : NO;
+	_overRideAnimations = [prefs objectForKey:@"overrideanimations"] ? [[prefs objectForKey:@"overrideanimations"] boolValue] : NO;
+	_animations = [prefs objectForKey:@"animations"] ? [[prefs objectForKey:@"animations"] boolValue] : YES;
+	_passwordDirectly = [prefs objectForKey:@"passworddirectly"] ? [[prefs objectForKey:@"passworddirectly"] boolValue] : YES;
+	if (![prefs objectForKey:@"2.0"]) {
+		[prefs setObject:@"OK" forKey:@"2.0"];
+		[prefs writeToFile:@"/var/mobile/Library/Preferences/com.zimm.libdisplaystack.plist" atomically:YES];
+		UIModalView *alert = [[UIModalView alloc] initWithTitle:@"Welcome to DisplayController 2.0" buttons:[NSArray arrayWithObjects:@"Settings", @"Later", nil] defaultButtonIndex:0 delegate:[[DSModalDelegate alloc] init] context:NULL];
+		[alert setBodyText:@"Go configure your preferences in the settings app. The default password for locking apps is alpine. Dont forget your new password when you set it in the settings app."];
+		[alert setNumberOfRows:1];
+		[alert popupAlertAnimated:YES];
+		[alert release];
+	}
+	[prefs release];
+}
+
+%end
+
+%hook SBIconList
+
+-(void)scatterWithDuration:(double)duration startTime:(double)time
+{
+	if (!(_overRideAnimations && !_animations))
+		%orig;
+}
+
+-(void)unscatterWithDuration:(double)duration startTime:(double)time
+{
+	if (!(_overRideAnimations && !_animations) || [self isScattered])
+		%orig;
+}
+
+
+-(void)unscatter:(BOOL)unscatter startTime:(double)time
+{
+	if (!(_overRideAnimations && !_animations) || [self isScattered])
+		%orig;
+}
+
+-(void)scatter:(BOOL)scatter startTime:(double)time
+{
+	if (!(_overRideAnimations && !_animations))
+		%orig;
+}
+
+%end
+
 __attribute__((constructor)) static void LibDisplayStackInitializer()
 {
 	dlopen("/Library/MobileSubstrate/DynamicLibraries/Backgrounder.dylib", RTLD_LAZY);
@@ -131,6 +281,10 @@ __attribute__((constructor)) static void LibDisplayStackInitializer()
 	%init;
 }
 
+@interface DSDisplayController (Private)
+- (void)_activateAppWithDisplayIdentifier:(NSString *)identifier animated:(BOOL)animated;
+- (void)releaseArray:(NSArray *)tmp;
+@end
 
 @implementation DSDisplayController
 
@@ -167,7 +321,7 @@ __attribute__((constructor)) static void LibDisplayStackInitializer()
 
 - (NSArray *)activeApps
 {
-	return [[activeApps copy] copy];
+	return [[activeApps copy] retain];
 }
 
 - (NSSet *)backgroundedApplications
@@ -177,7 +331,7 @@ __attribute__((constructor)) static void LibDisplayStackInitializer()
 
 - (NSArray *)backgroundedApps
 {
-	return [[backgroundedApps copy] copy];
+	return [[backgroundedApps copy] retain];
 }
 
 + (void)initialize
@@ -194,6 +348,22 @@ __attribute__((constructor)) static void LibDisplayStackInitializer()
 
 - (void)activateAppWithDisplayIdentifier:(NSString *)identifier animated:(BOOL)animated
 {
+	if (lockApps) {
+		NSDictionary *prefs = [[NSDictionary alloc] initWithContentsOfFile:@"/var/mobile/Library/Preferences/com.zimm.libdisplaystack.plist"] ?: [[NSDictionary alloc] init];
+		if ([(NSArray *)[prefs objectForKey:@"lockedapps"] containsObject:identifier]) {
+			[self lockedAlertWithIdentifier:identifier andAnimations:animated];
+			[prefs release];
+			return;
+		}
+		[prefs release];
+	}
+	[self _activateAppWithDisplayIdentifier:identifier animated:animated];
+}
+
+- (void)_activateAppWithDisplayIdentifier:(NSString *)identifier animated:(BOOL)animated
+{
+	if (_overRideAnimations)
+		animated = _animations;
 	SBAwayController *awayCont = [$SBAwayController sharedAwayController];
 	if ([awayCont isLocked])
 		[awayCont unlockWithSound:[$SBSoundPreferences playLockSound]];
@@ -258,10 +428,12 @@ __attribute__((constructor)) static void LibDisplayStackInitializer()
 				[uiCont categoriesSBCloseAll];
 		}
 }
+
 - (void)activateApplication:(SBApplication *)app animated:(BOOL)animated
 {
 	[self activateAppWithDisplayIdentifier:[app displayIdentifier] animated:animated];
 }
+
 - (void)backgroundTopApplication
 {
 	NSString *displayIdentifier = [[SBWActiveDisplayStack topApplication] displayIdentifier];
@@ -276,22 +448,27 @@ __attribute__((constructor)) static void LibDisplayStackInitializer()
 	if (displayIdentifier && ![displayIdentifier isEqualToString:kSpringBoardDisplayIdentifier])
 		[springBoardApp setBackgroundingEnabled:enabled forDisplayIdentifier:displayIdentifier];
 }
+
 - (void)setBackgroundingEnabled:(BOOL)enabled forApplication:(SBApplication *)app
 {
 	[self setBackgroundingEnabled:enabled forDisplayIdentifier:[app displayIdentifier]];
 }
+
 - (void)exitAppWithDisplayIdentifier:(NSString *)identifier animated:(BOOL)animated
 {
 	[self exitAppWithDisplayIdentifier:identifier animated:animated force:NO];
 }
+
 - (void)exitApplication:(SBApplication *)app animated:(BOOL)animated
 {
 	[self exitAppWithDisplayIdentifier:[app displayIdentifier] animated:animated];
 }
-// Not sure what the original method was supposed to do, but it appears buggy. refactored into something more manageable
+
 - (void)exitAppWithDisplayIdentifier:(NSString *)identifier animated:(BOOL)animated force:(BOOL)force
 {
 	// Can't deactivate SpringBoard
+	if (_overRideAnimations)
+		animated = _animations;
 	if ([identifier isEqualToString:kSpringBoardDisplayIdentifier])
 		return;
 	
@@ -338,6 +515,8 @@ __attribute__((constructor)) static void LibDisplayStackInitializer()
 }
 - (void)deactivateTopApplicationAnimated:(BOOL)animated force:(BOOL)force
 {
+	if (_overRideAnimations)
+		animated = _animations;
 	SBApplication *app = [SBWActiveDisplayStack topApplication];
 	if (!app)
 		return;
@@ -372,14 +551,91 @@ __attribute__((constructor)) static void LibDisplayStackInitializer()
 			[SBWSuspendingDisplayStack pushDisplay:app];
 		}
 }
+
 - (void)enableBackgroundingForDisplayIdentifier:(NSString *)identifier
 {
 	[self setBackgroundingEnabled:YES forDisplayIdentifier:identifier];
 }
+
 - (void)disableBackgroundingForDisplayIdentifier:(NSString *)identifier
 {
 	[self setBackgroundingEnabled:NO forDisplayIdentifier:identifier];
 }
+
+- (void)setNewActiveApps:(NSArray *)newApps
+{
+	if (canReorder)
+		[activeApps setArray:newApps];
+}
+
+-(void)modalView:(id)view didDismissWithButtonIndex:(int)buttonIndex
+{
+	UIModalView *modalView = (UIModalView *)view;
+	if ([modalView.title isEqualToString:@"Restricted"]) {
+		if (buttonIndex == 1) {
+			UIModalView *pass = [[UIModalView alloc] initWithTitle:@"Password" buttons:[NSArray arrayWithObjects:@"Cancel", @"Okay", nil] defaultButtonIndex:0 delegate:self context:NULL];
+			[pass setBodyText:@"Enter master password"];
+			[pass addTextFieldWithValue:@"" label:@"password"];
+			UITextField *passField = [pass textFieldAtIndex:0];
+			passField.placeholder = @"Password";
+			passField.clearButtonMode = UITextFieldViewModeAlways;
+			passField.keyboardAppearance = UIKeyboardAppearanceAlert;
+			passField.autocorrectionType = UITextAutocorrectionTypeNo;
+			passField.secureTextEntry = YES;
+			[pass setNumberOfRows:1];
+			[pass popupAlertAnimated:YES];
+			[pass release];
+		}
+	} else if ([modalView.title isEqualToString:@"Password"]) {
+		if (buttonIndex == 1) {
+			UITextField *passField = [modalView textFieldAtIndex:0];
+			NSDictionary *prefs = [[NSDictionary alloc] initWithContentsOfFile:@"/var/mobile/Library/Preferences/com.zimm.libdisplaystack.plist"];
+			if ([passField.text isEqualToString:([prefs objectForKey:@"password"] ?: @"alpine")]) {
+				overrideLaunch = YES;
+				[self _activateAppWithDisplayIdentifier:currentID animated:currentAnimation];
+			} else {
+				UIModalView *passcode = [[UIModalView alloc] initWithTitle:@"Wrong Password" buttons:[NSArray arrayWithObjects:@"Okay", nil] defaultButtonIndex:0 delegate:nil context:NULL];
+				[passcode setBodyText:@"To launch this application you must unlock it with the master password"];
+				[passcode popupAlertAnimated:YES];
+				[passcode release];
+			}
+			[currentID release];
+			currentID = nil;
+		}
+	}
+}
+
+- (BOOL)canReorder
+{
+	return canReorder;
+}
+
+- (void)lockedAlertWithIdentifier:(NSString *)identifier andAnimations:(BOOL)animations
+{
+	currentID = [identifier retain];
+	currentAnimation = animations;
+	if (_passwordDirectly) {
+		UIModalView *pass = [[UIModalView alloc] initWithTitle:@"Password" buttons:[NSArray arrayWithObjects:@"Cancel", @"Okay", nil] defaultButtonIndex:0 delegate:self context:NULL];
+		[pass setBodyText:@"Enter master password"];
+		[pass addTextFieldWithValue:@"" label:@"password"];
+		UITextField *passField = [pass textFieldAtIndex:0];
+		passField.placeholder = @"Password";
+		passField.clearButtonMode = UITextFieldViewModeAlways;
+		passField.keyboardAppearance = UIKeyboardAppearanceAlert;
+		passField.autocorrectionType = UITextAutocorrectionTypeNo;
+		passField.secureTextEntry = YES;
+		[pass setNumberOfRows:1];
+		[pass popupAlertAnimated:YES];
+		[pass release];
+	} else {
+		UIModalView *passcode = [[UIModalView alloc] initWithTitle:@"Restricted" buttons:[NSArray arrayWithObjects:@"Okay", @"Unlock", nil] defaultButtonIndex:0 delegate:self context:NULL];
+		[passcode setBodyText:@"To launch this application you must unlock it with the master password"];
+		[passcode setNumberOfRows:1];
+		[passcode popupAlertAnimated:YES];
+		[passcode release];
+	}
+}
+
 @end
 
 
