@@ -32,30 +32,6 @@
 - (BOOL)isWildcat;
 @end
 
-@interface DSModalDelegate : NSObject<UIModalViewDelegate> {
-}
--(void)modalView:(id)view didDismissWithButtonIndex:(int)buttonIndex;
-@end
-
-@implementation DSModalDelegate
-
--(void)modalView:(id)view didDismissWithButtonIndex:(int)buttonIndex
-{
-	UIModalView *view1 = (UIModalView *)view;
-	if ([view1.title isEqualToString:@"Welcome to DisplayController 2.0"]) {
-		switch (buttonIndex) {
-			case 0:
-				[[DSDisplayController sharedInstance] activateAppWithDisplayIdentifier:@"com.apple.Preferences" animated:YES];
-				break;
-			default:
-				break;
-		}
-	}
-	[(SpringBoard *)[UIApplication sharedApplication] releaseDSDelegate:self];
-}
-
-@end
-
 %class SBApplicationController;
 %class SBAwayController;
 %class SBSoundPreferences;
@@ -174,12 +150,6 @@ static void UpdatePreferences() {
 	%orig;
 }
 
-%new(v@:@)
-- (void)releaseDSDelegate:(id)_delegate
-{
-	[_delegate release];
-}
-
 %end
 
 %hook SBApplication
@@ -231,15 +201,6 @@ static void UpdatePreferences() {
 	_overRideAnimations = [prefs objectForKey:@"overrideanimations"] ? [[prefs objectForKey:@"overrideanimations"] boolValue] : NO;
 	_animations = [prefs objectForKey:@"animations"] ? [[prefs objectForKey:@"animations"] boolValue] : YES;
 	_passwordDirectly = [prefs objectForKey:@"passworddirectly"] ? [[prefs objectForKey:@"passworddirectly"] boolValue] : YES;
-	if (![prefs objectForKey:@"2.0"]) {
-		[prefs setObject:@"OK" forKey:@"2.0"];
-		[prefs writeToFile:@"/var/mobile/Library/Preferences/com.zimm.libdisplaystack.plist" atomically:YES];
-		UIModalView *alert = [[UIModalView alloc] initWithTitle:@"Welcome to DisplayController 2.0" buttons:[NSArray arrayWithObjects:@"Settings", @"Later", nil] defaultButtonIndex:0 delegate:[[DSModalDelegate alloc] init] context:NULL];
-		[alert setBodyText:@"Go configure your preferences in the settings app. The default password for locking apps is alpine. Dont forget your new password when you set it in the settings app."];
-		[alert setNumberOfRows:1];
-		[alert popupAlertAnimated:YES];
-		[alert release];
-	}
 	[prefs release];
 }
 
@@ -371,7 +332,7 @@ __attribute__((constructor)) static void LibDisplayStackInitializer()
 	SBApplication *fromApp = [SBWActiveDisplayStack topApplication];
     NSString *fromDisplayId = fromApp ? [fromApp displayIdentifier] : kSpringBoardDisplayIdentifier;
 	SBApplication *toApp = [(SBApplicationController *)[$SBApplicationController sharedInstance] applicationWithDisplayIdentifier:identifier];
-	if ([[toApp displayIdentifier] isEqualToString:[fromApp displayIdentifier]])
+	if ([[toApp displayIdentifier] isEqualToString:[fromApp displayIdentifier]] || [[toApp displayIdentifier] isEqualToString:[[SBWPreActivateDisplayStack topApplication] displayIdentifier]])
 		return;
 		// Make sure that the target app is not the same as the current app
 		// NOTE: This is checked as there is no point in proceeding otherwise
