@@ -15,17 +15,18 @@
 #import <SpringBoard/SBAlert.h>
 #import <SpringBoard/SBApplication.h>
 #import <SpringBoard/SBIconList.h>
+#import "SBAppDosadoView.h"
 
 #import "UIModalView.h"
 #import "UIModalViewDelegate.h"
 
 @interface SpringBoard (Backgrounder)
 - (void)setBackgroundingEnabled:(BOOL)enable forDisplayIdentifier:(NSString *)identifier;
-- (void)releaseDSDelegate:(id)_delegate;
 @end
 
 @interface SBUIController (CategoriesSB)
 - (void)categoriesSBCloseAll;
+- (void)activateApplicationFromSwitcher:(id)app;
 @end
 
 @interface UIDevice (iPad)
@@ -36,21 +37,14 @@
 %class SBAwayController;
 %class SBSoundPreferences;
 %class SBUIController;
+%class SBAppDosadoView;
 
 static NSString *killedApp;
 static NSMutableArray *displayStacks;
 static NSMutableArray *activeApps;
 static NSMutableArray *backgroundedApps;
 static DSDisplayController *sharedInstance;
-static BOOL _overRideAnimations = NO;
-static BOOL _animations = YES;
 
-static void UpdatePreferences() {
-	NSDictionary *prefs = [[NSDictionary alloc] initWithContentsOfFile:@"/var/mobile/Library/Preferences/com.zimm.libdisplaystack.plist"] ?: [[NSDictionary alloc] init];
-	_overRideAnimations = [prefs objectForKey:@"overrideanimations"] ? [[prefs objectForKey:@"overrideanimations"] boolValue] : NO;
-	_animations = [prefs objectForKey:@"animations"] ? [[prefs objectForKey:@"animations"] boolValue] : YES;
-	[prefs release];
-}
 
 #define SBWPreActivateDisplayStack        [displayStacks objectAtIndex:0]
 #define SBWActiveDisplayStack             [displayStacks objectAtIndex:1]
@@ -77,27 +71,6 @@ static void UpdatePreferences() {
 
 %end
 
-%hook SBDisplay
-
--(void)setDisplaySetting:(unsigned)setting flag:(BOOL)flag
-{
-	if (_overRideAnimations && !_animations && setting == 4) {
-		%orig;
-		[self setActivationSetting:0x1000 value:[NSNumber numberWithInteger:1]];
-	} else
-		%orig;
-}
-
--(void)setDeactivationSetting:(unsigned)setting flag:(BOOL)flag
-{
-	if (_overRideAnimations && !_animations && setting == 2) {
-		%orig(0x8, NO);
-	} else
-		%orig;
-}
-
-%end
-
 %hook SpringBoard
 
 - (void)applicationDidFinishLaunching:(id)application
@@ -105,7 +78,6 @@ static void UpdatePreferences() {
 	displayStacks = (NSMutableArray *)CFArrayCreateMutable(kCFAllocatorDefault, 0, NULL);
 	activeApps = [[NSMutableArray alloc] init];
 	backgroundedApps = [[NSMutableArray alloc] init];
-	CFNotificationCenterAddObserver(CFNotificationCenterGetDarwinNotifyCenter(), NULL, (void (*)(CFNotificationCenterRef, void *, CFStringRef, const void *, CFDictionaryRef))UpdatePreferences, CFSTR("com.zimm.libdisplaystack.settingschanged"), NULL, CFNotificationSuspensionBehaviorHold);
     %orig;
 }
 
@@ -161,48 +133,6 @@ static void UpdatePreferences() {
 
 %end
 
-%hook SBUIController
-
-- (void)finishLaunching
-{
-	%orig;
-	NSMutableDictionary *prefs = [[NSMutableDictionary alloc] initWithContentsOfFile:@"/var/mobile/Library/Preferences/com.zimm.libdisplaystack.plist"] ?: [[NSMutableDictionary alloc] init];
-	_overRideAnimations = [prefs objectForKey:@"overrideanimations"] ? [[prefs objectForKey:@"overrideanimations"] boolValue] : NO;
-	_animations = [prefs objectForKey:@"animations"] ? [[prefs objectForKey:@"animations"] boolValue] : YES;
-	[prefs release];
-}
-
-%end
-
-%hook SBIconList
-
--(void)scatterWithDuration:(double)duration startTime:(double)time
-{
-	if (!(_overRideAnimations && !_animations))
-		%orig;
-}
-
--(void)unscatterWithDuration:(double)duration startTime:(double)time
-{
-	if (!(_overRideAnimations && !_animations) || [self isScattered])
-		%orig;
-}
-
-
--(void)unscatter:(BOOL)unscatter startTime:(double)time
-{
-	if (!(_overRideAnimations && !_animations) || [self isScattered])
-		%orig;
-}
-
--(void)scatter:(BOOL)scatter startTime:(double)time
-{
-	if (!(_overRideAnimations && !_animations))
-		%orig;
-}
-
-%end
-
 __attribute__((constructor)) static void LibDisplayStackInitializer()
 {
 	dlopen("/Library/MobileSubstrate/DynamicLibraries/Backgrounder.dylib", RTLD_LAZY);
@@ -235,7 +165,10 @@ __attribute__((constructor)) static void LibDisplayStackInitializer()
 - (SBApplication *)activeApp
 {
 	// Return active app if there is one, otherwise SpringBoard
-	return [SBWActiveDisplayStack topApplication] ?: [(SBApplicationController *)[$SBApplicationController sharedInstance] springBoard];
+	if ([[[UIDevice currentDevice] systemVersion] floatValue] < 4.0)
+		return [SBWActiveDisplayStack topApplication] ?: [(SBApplicationController *)[$SBApplicationController sharedInstance] springBoard];
+	else
+		return [SBWActiveDisplayStack topApplication] ?: [(SBApplicationController *)[$SBApplicationController sharedInstance] applicationWithDisplayIdentifier:@"com.apple.springboard"];
 }
 
 - (NSSet *)activeApplications
@@ -272,27 +205,22 @@ __attribute__((constructor)) static void LibDisplayStackInitializer()
 
 - (void)activateAppWithDisplayIdentifier:(NSString *)identifier animated:(BOOL)animated
 {
-	if (_overRideAnimations)
-		animated = _animations;
 	SBAwayController *awayCont = [$SBAwayController sharedAwayController];
 	if ([awayCont isLocked])
 		[awayCont unlockWithSound:[$SBSoundPreferences playLockSound]];
 	
 	SBApplication *fromApp = [SBWActiveDisplayStack topApplication];
     NSString *fromDisplayId = fromApp ? [fromApp displayIdentifier] : kSpringBoardDisplayIdentifier;
-	SBApplication *toApp = [(SBApplicationController *)[$SBApplicationController sharedInstance] applicationWithDisplayIdentifier:identifier];
-	if ([[toApp displayIdentifier] isEqualToString:[fromApp displayIdentifier]] || [[toApp displayIdentifier] isEqualToString:[[SBWPreActivateDisplayStack topApplication] displayIdentifier]])
+	NSLog(@"From app display identifier is: %@", fromDisplayId);
+	SBApplication *app = [(SBApplicationController *)[$SBApplicationController sharedInstance] applicationWithDisplayIdentifier:identifier];
+	
+	if ([[app displayIdentifier] isEqualToString:[fromApp displayIdentifier]])
 		return;
 		// Make sure that the target app is not the same as the current app
 		// NOTE: This is checked as there is no point in proceeding otherwise
-		if ([fromDisplayId isEqualToString:identifier])
-			return;
 		// NOTE: Save the identifier for later use
 		//deactivatingApp = [fromDisplayId copy];
 
-		SBApplication *app = [(SBApplicationController *)[$SBApplicationController sharedInstance] applicationWithDisplayIdentifier:identifier];
-		if (!app)
-			return;
 	
 		BOOL switchingToSpringBoard = [identifier isEqualToString:kSpringBoardDisplayIdentifier];
 
@@ -304,31 +232,48 @@ __attribute__((constructor)) static void LibDisplayStackInitializer()
 			// Activate the target application
 			[SBWPreActivateDisplayStack pushDisplay:app];
 		} else {
-			// Switching from another app
-			if (!switchingToSpringBoard) {
-				// Switching to another app; setup app-to-app
-				[app setActivationSetting:0x40 flag:YES]; // animateOthersSuspension
-				[app setActivationSetting:0x20000 flag:YES]; // appToApp
-				[app setDisplaySetting:0x4 flag:YES]; // animate
+			if ([[[UIDevice currentDevice] systemVersion] floatValue] < 4.0f) {
+				if (!switchingToSpringBoard) {
+					// Switching to another app; setup app-to-app
+					[app setActivationSetting:0x40 flag:YES]; // animateOthersSuspension
+					[app setActivationSetting:0x20000 flag:YES]; // appToApp
+					[app setDisplaySetting:0x4 flag:YES]; // animate
+					if (!animated)
+						[app setActivationSetting:0x1000 value:[NSNumber numberWithInteger:1]];
+
+					// Activate the target application (will wait for
+					// deactivation of current app)
+					[SBWPreActivateDisplayStack pushDisplay:app];
+				}
+				// Deactivate the current application
+
+				// NOTE: Must set animation flag for deactivation, otherwise
+				//       application window does not disappear (reason yet unknown)
+				[fromApp setDeactivationSetting:0x2 flag:YES]; // animate
 				if (!animated)
-					[app setActivationSetting:0x1000 value:[NSNumber numberWithInteger:1]];
+					[fromApp setDeactivationSetting:0x8 value:[NSNumber numberWithInteger:1]];
 
-				// Activate the target application (will wait for
-				// deactivation of current app)
-				[SBWPreActivateDisplayStack pushDisplay:app];
+				// Deactivate by moving from active stack to suspending stack
+				[SBWActiveDisplayStack popDisplay:fromApp];
+				[SBWSuspendingDisplayStack pushDisplay:fromApp];
+				
+			} else {
+				if (!switchingToSpringBoard)
+					[[objc_getClass("SBUIController") sharedInstance] activateApplicationFromSwitcher:app];
+				else {
+					// Deactivate the current application
+
+					// NOTE: Must set animation flag for deactivation, otherwise
+					//       application window does not disappear (reason yet unknown)
+					[fromApp setDeactivationSetting:0x2 flag:YES]; // animate
+					if (!animated)
+						[fromApp setDeactivationSetting:0x8 value:[NSNumber numberWithInteger:1]];
+
+					// Deactivate by moving from active stack to suspending stack
+					[SBWActiveDisplayStack popDisplay:fromApp];
+					[SBWSuspendingDisplayStack pushDisplay:fromApp];
+				}
 			}
-
-			// Deactivate the current application
-
-			// NOTE: Must set animation flag for deactivation, otherwise
-			//       application window does not disappear (reason yet unknown)
-			[fromApp setDeactivationSetting:0x2 flag:YES]; // animate
-			if (!animated)
-				[fromApp setDeactivationSetting:0x8 value:[NSNumber numberWithInteger:1]];
-
-			// Deactivate by moving from active stack to suspending stack
-			[SBWActiveDisplayStack popDisplay:fromApp];
-			[SBWSuspendingDisplayStack pushDisplay:fromApp];
 		}
 
 		if (!switchingToSpringBoard) {
@@ -377,8 +322,6 @@ __attribute__((constructor)) static void LibDisplayStackInitializer()
 - (void)exitAppWithDisplayIdentifier:(NSString *)identifier animated:(BOOL)animated force:(BOOL)force
 {
 	// Can't deactivate SpringBoard
-	if (_overRideAnimations)
-		animated = _animations;
 	if ([identifier isEqualToString:kSpringBoardDisplayIdentifier])
 		return;
 	
@@ -425,8 +368,6 @@ __attribute__((constructor)) static void LibDisplayStackInitializer()
 }
 - (void)deactivateTopApplicationAnimated:(BOOL)animated force:(BOOL)force
 {
-	if (_overRideAnimations)
-		animated = _animations;
 	SBApplication *app = [SBWActiveDisplayStack topApplication];
 	if (!app)
 		return;
