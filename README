@@ -1,2 +1,7 @@
 Built with theos
 This is not intended at ALL to be sold for any profit whatsoever
+
+WARNING:
+
+This is a very old library and most definitely does not work with the newest iOS version. 
+Also, there are clear memory leaks in here.
